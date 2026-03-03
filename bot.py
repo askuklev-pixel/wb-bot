@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_TOKEN_HERE")
 
-# Хранилище ссылок для каждого пользователя
 user_urls = {}
 
 def extract_article(url: str) -> Optional[str]:
@@ -51,7 +50,18 @@ def get_basket(vol: int) -> str:
     elif vol < 2405: return "15"
     elif vol < 2621: return "16"
     elif vol < 2837: return "17"
-    else:            return "18"
+    elif vol < 3053: return "18"
+    elif vol < 3269: return "19"
+    elif vol < 3485: return "20"
+    elif vol < 3701: return "21"
+    elif vol < 3917: return "22"
+    elif vol < 4133: return "23"
+    elif vol < 4349: return "24"
+    elif vol < 4565: return "25"
+    elif vol < 4781: return "26"
+    elif vol < 4997: return "27"
+    elif vol < 5213: return "28"
+    else:            return "29"
 
 def download_photos(article: str) -> List[BytesIO]:
     article_int = int(article)
@@ -203,7 +213,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in user_urls:
         user_urls[user_id] = []
 
-    # Находим ссылки в сообщении
     lines = [l.strip() for l in text.split('\n') if l.strip()]
     new_urls = [l for l in lines if 'wildberries.ru' in l]
 
