@@ -13,13 +13,16 @@ from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_TOKEN_HERE")
+
+# Хранилище ссылок для каждого пользователя
+user_urls = {}
 
 def extract_article(url: str) -> Optional[str]:
     match = re.search(r'/catalog/(\d+)/', url)
@@ -170,73 +173,114 @@ def create_excel(data: list) -> BytesIO:
     return output
 
 
+def get_keyboard(url_count: int):
+    buttons = []
+    if url_count > 0:
+        buttons.append([
+            InlineKeyboardButton(f"🚀 Создать Excel ({url_count} ссылок)", callback_data="create"),
+            InlineKeyboardButton("🗑 Очистить", callback_data="clear")
+        ])
+    return InlineKeyboardMarkup(buttons) if buttons else None
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_urls[user_id] = []
     await update.message.reply_text(
         "👋 Привет! Я парсю фото карточек Wildberries и делаю Excel.\n\n"
-        "Просто отправь мне ссылки на товары WB — каждую с новой строки.\n\n"
-        "Пример:\n"
-        "https://www.wildberries.ru/catalog/123456789/detail.aspx\n"
-        "https://www.wildberries.ru/catalog/987654321/detail.aspx"
+        "📌 Как пользоваться:\n"
+        "1. Отправляй ссылки на товары WB — по одной или несколько\n"
+        "2. Когда накидал все — нажми кнопку «Создать Excel»\n\n"
+        "Пример ссылки:\n"
+        "https://www.wildberries.ru/catalog/123456789/detail.aspx"
     )
 
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📋 Как пользоваться:\n\n"
-        "1. Отправь ссылки на карточки WB (каждую с новой строки)\n"
-        "2. Подожди ~30 секунд\n"
-        "3. Получи Excel файл с фотографиями всех товаров\n\n"
-        "В файле:\n"
-        "• Каждый конкурент = одна строка\n"
-        "• Все его фото идут по столбцам\n"
-        "• Фото крупные, удобно сравнивать"
-    )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     text = update.message.text.strip()
-    lines = [l.strip() for l in text.split('\n') if l.strip()]
-    urls = [l for l in lines if 'wildberries.ru' in l or re.search(r'\d{7,12}', l)]
 
-    if not urls:
+    if user_id not in user_urls:
+        user_urls[user_id] = []
+
+    # Находим ссылки в сообщении
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    new_urls = [l for l in lines if 'wildberries.ru' in l]
+
+    if not new_urls:
         await update.message.reply_text(
-            "❌ Не нашёл ссылок на WB.\n\n"
-            "Отправь ссылки в таком формате:\n"
+            "❌ Не нашёл ссылок на WB.\n"
+            "Отправь ссылку в формате:\n"
             "https://www.wildberries.ru/catalog/123456789/detail.aspx"
         )
         return
 
-    msg = await update.message.reply_text(f"⏳ Обрабатываю {len(urls)} товар(ов)...")
+    user_urls[user_id].extend(new_urls)
+    total = len(user_urls[user_id])
 
-    data = []
-    for i, url in enumerate(urls, 1):
-        await msg.edit_text(f"⏳ Скачиваю фото {i}/{len(urls)}...")
-        article = extract_article(url)
-        if not article:
-            data.append({"num": i, "url": url, "photos": []})
-            continue
-        photos = download_photos(article)
-        logger.info(f"Article {article}: {len(photos)} photos downloaded")
-        data.append({"num": i, "url": url, "photos": photos})
-        time.sleep(0.3)
+    keyboard = get_keyboard(total)
+    await update.message.reply_text(
+        f"✅ Добавлено {len(new_urls)} ссылок\n"
+        f"📋 Всего в списке: {total}\n\n" +
+        "\n".join([f"{i+1}. {u[:50]}..." for i, u in enumerate(user_urls[user_id])]),
+        reply_markup=keyboard
+    )
 
-    await msg.edit_text("📊 Создаю Excel файл...")
 
-    try:
-        excel = create_excel(data)
-        total_photos = sum(len(e["photos"]) for e in data)
-        await update.message.reply_document(
-            document=excel,
-            filename="воронки-конкурентов.xlsx",
-            caption=f"✅ Готово!\n\nКонкурентов: {len(data)}\nФото всего: {total_photos}"
-        )
-        await msg.delete()
-    except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {e}")
+async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    if query.data == "clear":
+        user_urls[user_id] = []
+        await query.edit_message_text("🗑 Список очищен. Отправляй новые ссылки!")
+        return
+
+    if query.data == "create":
+        urls = user_urls.get(user_id, [])
+        if not urls:
+            await query.edit_message_text("❌ Нет ссылок. Отправь ссылки сначала.")
+            return
+
+        await query.edit_message_text(f"⏳ Начинаю обработку {len(urls)} товаров...")
+
+        data = []
+        for i, url in enumerate(urls, 1):
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=f"⏳ Скачиваю фото {i}/{len(urls)}..."
+            )
+            article = extract_article(url)
+            if not article:
+                data.append({"num": i, "url": url, "photos": []})
+                continue
+            photos = download_photos(article)
+            logger.info(f"Article {article}: {len(photos)} photos")
+            data.append({"num": i, "url": url, "photos": photos})
+            time.sleep(0.3)
+
+        try:
+            excel = create_excel(data)
+            total_photos = sum(len(e["photos"]) for e in data)
+            await context.bot.send_document(
+                chat_id=query.message.chat_id,
+                document=excel,
+                filename="воронки-конкурентов.xlsx",
+                caption=f"✅ Готово!\n\nКонкурентов: {len(data)}\nФото всего: {total_photos}"
+            )
+            user_urls[user_id] = []
+        except Exception as e:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=f"❌ Ошибка: {e}"
+            )
 
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CallbackQueryHandler(handle_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info("Бот запущен!")
     app.run_polling()
