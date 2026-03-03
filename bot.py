@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""
-WB Funnel Parser Bot
-Парсит фото карточек WB и создаёт Excel с фото в строчку
-"""
-
 import os
 import re
 import time
@@ -25,8 +20,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_TOKEN_HERE")
-
-# --- WB логика ---
 
 def extract_article(url: str) -> Optional[str]:
     match = re.search(r'/catalog/(\d+)/', url)
@@ -64,15 +57,20 @@ def download_photos(article: str) -> List[BytesIO]:
     basket = get_basket(vol)
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-        "Referer": "https://www.wildberries.ru/"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Referer": "https://www.wildberries.ru/",
+        "Origin": "https://www.wildberries.ru"
     }
 
     photos = []
     for i in range(1, 31):
         url = f"https://basket-{basket}.wbbasket.ru/vol{vol}/part{part}/{article}/images/big/{i}.webp"
         try:
-            r = requests.get(url, headers=headers, timeout=10)
+            r = requests.get(url, headers=headers, timeout=15)
             if r.status_code == 200 and len(r.content) > 1000:
                 img_bytes = BytesIO(r.content)
                 pil_img = PILImage.open(img_bytes)
@@ -82,29 +80,22 @@ def download_photos(article: str) -> List[BytesIO]:
                 photos.append(png_bytes)
             else:
                 break
-        except:
+        except Exception as e:
+            logger.error(f"Photo {i} error: {e}")
             break
-        time.sleep(0.05)
+        time.sleep(0.1)
 
     return photos
 
 
 def create_excel(data: list) -> BytesIO:
-    """
-    Формат: каждый конкурент = одна строка
-    Столбец A = №
-    Столбец B = Ссылка
-    Столбец C, D, E... = фото 1, 2, 3...
-    Фото крупные — 300px высота
-    """
     wb = Workbook()
     ws = wb.active
     ws.title = "Воронки конкурентов"
 
-    IMG_HEIGHT = 300  # крупные фото
+    IMG_HEIGHT = 300
     ROW_HEIGHT_PT = IMG_HEIGHT * 0.75
-    IMG_WIDTH = 240   # примерная ширина (соотношение ~4:5)
-    COL_WIDTH_CHARS = 34  # ширина колонки с фото в символах
+    COL_WIDTH_CHARS = 34
 
     header_fill = PatternFill("solid", fgColor="1A1A18")
     header_font = Font(name="Calibri", bold=True, color="F5F2EC", size=13)
@@ -114,11 +105,9 @@ def create_excel(data: list) -> BytesIO:
     thin = Side(border_style="thin", color="D4CFC7")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    # Фиксированные столбцы
     ws.column_dimensions["A"].width = 6
     ws.column_dimensions["B"].width = 50
 
-    # Заголовки первых двух столбцов
     for col, title in enumerate(["№", "Ссылка"], 1):
         cell = ws.cell(row=1, column=col, value=title)
         cell.fill = header_fill
@@ -126,10 +115,8 @@ def create_excel(data: list) -> BytesIO:
         cell.alignment = center
         cell.border = border
 
-    # Найдём максимальное кол-во фото среди всех конкурентов
     max_photos = max((len(e["photos"]) for e in data), default=0)
 
-    # Заголовки фото-столбцов
     for p in range(max_photos):
         col = p + 3
         col_letter = get_column_letter(col)
@@ -140,18 +127,15 @@ def create_excel(data: list) -> BytesIO:
         cell.alignment = center
         cell.border = border
 
-    # Данные — каждый конкурент = одна строка
     for entry in data:
-        row = entry["num"] + 1  # строка 1 = заголовок
+        row = entry["num"] + 1
         ws.row_dimensions[row].height = ROW_HEIGHT_PT
 
-        # № конкурента
         c1 = ws.cell(row=row, column=1, value=entry["num"])
         c1.font = accent_font
         c1.alignment = center
         c1.border = border
 
-        # Ссылка
         url = entry["url"]
         c2 = ws.cell(row=row, column=2, value=url)
         c2.font = Font(name="Calibri", color="CB11AB", size=11, underline="single")
@@ -159,31 +143,23 @@ def create_excel(data: list) -> BytesIO:
         c2.alignment = left
         c2.border = border
 
-        # Фото в столбцы C, D, E...
         for p_idx, photo_bytes in enumerate(entry["photos"]):
             col = p_idx + 3
             col_letter = get_column_letter(col)
             cell_addr = f"{col_letter}{row}"
-
-            # Граница ячейки
             ws.cell(row=row, column=col).border = border
-
             try:
                 photo_bytes.seek(0)
                 xl_img = XLImage(photo_bytes)
-
-                # Масштабируем по высоте
                 orig_w, orig_h = xl_img.width, xl_img.height
                 if orig_h > 0:
                     scale = IMG_HEIGHT / orig_h
                     xl_img.height = IMG_HEIGHT
                     xl_img.width = int(orig_w * scale)
-
                 ws.add_image(xl_img, cell_addr)
             except Exception as e:
                 ws.cell(row=row, column=col, value="[ошибка фото]")
 
-        # Пустые ячейки для конкурентов с меньшим кол-вом фото
         for p_idx in range(len(entry["photos"]), max_photos):
             col = p_idx + 3
             ws.cell(row=row, column=col).border = border
@@ -193,8 +169,6 @@ def create_excel(data: list) -> BytesIO:
     output.seek(0)
     return output
 
-
-# --- Телеграм хендлеры ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -219,8 +193,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-
-    # Извлекаем ссылки
     lines = [l.strip() for l in text.split('\n') if l.strip()]
     urls = [l for l in lines if 'wildberries.ru' in l or re.search(r'\d{7,12}', l)]
 
@@ -237,13 +209,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = []
     for i, url in enumerate(urls, 1):
         await msg.edit_text(f"⏳ Скачиваю фото {i}/{len(urls)}...")
-
         article = extract_article(url)
         if not article:
             data.append({"num": i, "url": url, "photos": []})
             continue
-
         photos = download_photos(article)
+        logger.info(f"Article {article}: {len(photos)} photos downloaded")
         data.append({"num": i, "url": url, "photos": photos})
         time.sleep(0.3)
 
@@ -252,17 +223,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         excel = create_excel(data)
         total_photos = sum(len(e["photos"]) for e in data)
-
         await update.message.reply_document(
             document=excel,
             filename="воронки-конкурентов.xlsx",
-            caption=f"✅ Готово!\n\n"
-                    f"Конкурентов: {len(data)}\n"
-                    f"Фото всего: {total_photos}"
+            caption=f"✅ Готово!\n\nКонкурентов: {len(data)}\nФото всего: {total_photos}"
         )
         await msg.delete()
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка при создании файла: {e}")
+        await msg.edit_text(f"❌ Ошибка: {e}")
 
 
 def main():
@@ -270,7 +238,6 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
     logger.info("Бот запущен!")
     app.run_polling()
 
